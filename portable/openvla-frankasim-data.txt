@@ -1,0 +1,6 @@
+# The upstream SERL FrankaSim environment pins NumPy 1.26.4.
+# These releases support that NumPy ABI in the RLinf dataset and simulator workers.
+numpy==1.26.4
+pandas==2.2.3
+pyarrow==20.0.0
+opencv-python==4.11.0.86

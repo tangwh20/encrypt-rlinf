@@ -1,0 +1,12 @@
+# Upstream checkouts, release directories, local project memory and build products
+# can have arbitrary names. Only these publisher inputs belong in this repository.
+/*
+!/.gitignore
+!/README.md
+!/compile.sh
+!/delivery/
+!/portable/
+
+__pycache__/
+*.py[cod]
+*.so
