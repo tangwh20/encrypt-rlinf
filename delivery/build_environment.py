@@ -35,7 +35,7 @@ def package_file(env_name, path, url, expected_hash, fallback=None):
         if not path.is_file():
             raise ValueError(f"{env_name} does not point to a file: {path}")
     else:
-        command = ["curl", "-fsSL", "--connect-timeout", "15", "--retry", "2",
+        command = ["curl", "-q", "-fsSL", "--connect-timeout", "15", "--retry", "2",
                    "--output", str(path)]
         try:
             subprocess.run([*command, url], check=True)
@@ -90,7 +90,7 @@ def prepare(work, portable, env):
             raise ValueError(f"RLINF_WHEELHOUSE does not point to a directory: {wheels}")
         pip.extend(["--no-index", "--find-links", str(wheels)])
     try:
-        subprocess.run(pip, env=env, check=True)
+        subprocess.run(pip, env={**env, "PIP_CONFIG_FILE": os.devnull}, check=True)
     except subprocess.CalledProcessError:
         raise ValueError(f"Could not install the Cython {CYTHON_VERSION} wheel. "
                          "Check the pip index or supply RLINF_WHEELHOUSE.") from None

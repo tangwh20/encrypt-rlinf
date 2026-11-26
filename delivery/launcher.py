@@ -1,6 +1,7 @@
 """Launch the bundled RLinf entry points with editable Hydra configuration."""
 
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -16,7 +17,9 @@ ENTRIES = {
     "train-realworld-async": "examples/embodiment/train_async.py",
     "eval-realworld-teleop": "examples/reward/eval_realworld_teleop.py",
     "eval": "evaluations/eval_embodied_agent.py",
+    "deploy": "evaluations/eval_embodied_agent.py",
     "eval-mani-ood": "evaluations/eval_embodied_agent.py",
+    "eval-diffusion": "evaluations/eval_embodied_agent.py",
     "train-vla-sft": "examples/sft/train_vla_sft.py",
     "train-vlm-sft": "examples/sft/train_vlm_sft.py",
     "train-reward": "examples/reward/train_reward_model.py",
@@ -45,7 +48,9 @@ DEFAULT_CONFIGS = {
     "train-realworld-async": "realworld_peginsertion_rlpd_cnn_async",
     "eval-realworld-teleop": "realworld_teleop",
     "eval": "libero_spatial_starvla_eval",
+    "deploy": "realworld_eval",
     "eval-mani-ood": "maniskill_ood_openvlaoft_eval",
+    "eval-diffusion": "wan22_ti2v_5b_nft_video_ocr",
     "train-vla-sft": "libero_sft_openpi",
     "train-vlm-sft": "qwen2_5_vl_sft_vlm",
     "train-reward": "reward_training",
@@ -84,6 +89,7 @@ SCRIPT_ROUTES = {
     "examples/agent/wideseek_r1/run_train.sh": "train-wideseek",
     "examples/agent/wideseek_r1/run_eval.sh": "eval-wideseek",
     "examples/diffusion/run_diffusion.sh": "train-diffusion",
+    "examples/diffusion/eval_diffusion.sh": "eval-diffusion",
     "examples/agent/rstar2/run_rstar2.sh": "train-rstar2",
     "examples/agent/coding_online_rl/run_main_coding_online_rl.sh": "train-coding",
     "examples/agent/coding_online_rl/run_main_coding_rl_llm_judge.sh": "train-coding-judge",
@@ -116,26 +122,49 @@ def public_scripts() -> list[str]:
     return list(SCRIPT_ROUTES)
 
 
+def short_command(script: Path) -> str:
+    """Give each upstream route a short, unambiguous command."""
+    command = script.stem.removeprefix("run_")
+    if command in {"train", "eval"} and script.parent != Path("evaluations"):
+        return f"{script.parent.name}/{command}"
+    return command
+
+
+def public_commands() -> list[str]:
+    """Show each short command alongside its upstream script in the ELF help."""
+    lines = [f"  {short_command(Path(script)):<26} {script}" for script in SCRIPT_ROUTES]
+    lines.append("  deploy                     evaluations/run_eval.sh (real-world policy deployment)")
+    return lines
+
+
 def resolve_script(name: str) -> str:
-    """Resolve a delivery mode, upstream script path or unique script basename."""
-    if name in ENTRIES:
-        return name
-    selector = name.removeprefix("./")
-    if not selector.endswith(".sh"):
-        selector += ".sh"
-    if selector in SCRIPT_ROUTES:
-        return SCRIPT_ROUTES[selector]
-    matches = [script for script in SCRIPT_ROUTES if Path(script).name == selector]
+    """Accept public short commands, upstream paths and legacy delivery modes."""
+    selector = name.removeprefix("./").removesuffix(".sh")
+    if selector in ENTRIES:
+        return selector
+    directory, _, basename = selector.rpartition("/")
+    command = basename.removeprefix("run_")
+    normalized = f"{directory}/{command}" if directory else command
+    matches = []
+    for route, mode in SCRIPT_ROUTES.items():
+        script = Path(route)
+        stem = script.stem.removeprefix("run_")
+        if normalized in (short_command(script), (script.parent / stem).as_posix()):
+            return mode
+        if not directory and command == stem:
+            matches.append(route)
     if len(matches) == 1:
         return SCRIPT_ROUTES[matches[0]]
     if matches:
         raise ValueError(f"Ambiguous script {name!r}. Use one of: {', '.join(matches)}")
-    raise ValueError(f"Unknown RLinf script {name!r}. Use --help to list available scripts.")
+    raise ValueError(f"Unknown script {name!r}. Use --help to list available commands.")
 
 
 def config_roots(app: Path, mode: str) -> list[Path]:
     """Return the bundled Hydra directories for the mode, default first."""
     embodied_config = app / "examples" / "embodiment" / "config"
+    if mode == "deploy":
+        return [app / "evaluations" / "realworld", embodied_config]
     if mode == "eval":
         evaluations = app / "evaluations"
         default = evaluations / "libero"
@@ -149,11 +178,26 @@ def config_roots(app: Path, mode: str) -> list[Path]:
         return [app / "evaluations" / "maniskill", embodied_config]
     if mode.startswith("train-reasoning-"):
         return [app / "examples" / "reasoning" / "config" / mode.rsplit("-", 1)[-1]]
-    if mode == "train-diffusion":
+    if mode in {"train-diffusion", "eval-diffusion"}:
         return [app / "examples" / "diffusion" / "config"]
     if mode in {"train-cfg-rl", "train-recap", "train-steam"}:
         return [app / "examples" / "offline_rl" / "config"]
     return [app / Path(ENTRIES[mode]).parent / "config"]
+
+
+def run_local_evaluation() -> None:
+    """Dispatch the composed job only if its topology fits the local Ray runtime."""
+    import hydra
+
+    @hydra.main(version_base="1.1", config_path=None)
+    def run(config):
+        if config.cluster.get("num_nodes", 1) > 1:
+            raise SystemExit("This delivery runs evaluation and deployment on a single Ray node. "
+                             "The selected configuration requires multiple nodes.")
+        from evaluations.eval_embodied_agent import main as evaluate
+        evaluate(config)
+
+    run()
 
 
 def entry_command(root: Path, mode: str) -> list[str]:
@@ -162,6 +206,10 @@ def entry_command(root: Path, mode: str) -> list[str]:
     path = root / relative_entry
     if path.is_file():
         return [sys.executable, str(path)]
+    if relative_entry.as_posix() == "evaluations/eval_embodied_agent.py":
+        return [sys.executable, "-c",
+                "from _rlinf_launcher import run_local_evaluation; run_local_evaluation()"]
+
 
     # Hydra uses the real module name in native deliveries. The absolute config
     # path supplied by main() keeps lookup independent of the loader's format.
@@ -204,11 +252,11 @@ def set_environment(root: Path, mode: str, benchmark: str) -> None:
             paths.append(value)
     os.environ["PYTHONPATH"] = os.pathsep.join(paths)
     os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
-    if mode in {"eval", "eval-mani-ood", "train-realworld-async"}:
+    if mode in {"eval", "deploy", "eval-diffusion", "eval-mani-ood", "train-realworld-async"}:
         os.environ.setdefault("HYDRA_FULL_ERROR", "1")
     if mode.startswith("train-coding"):
         os.environ.setdefault("VLLM_ATTENTION_BACKEND", "XFORMERS")
-    if mode in {"train-diffusion", "train-steam"}:
+    if mode in {"train-diffusion", "eval-diffusion", "train-steam"}:
         os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
     if mode.endswith("wideseek"):
         os.environ.setdefault("RAY_DEBUG", "1")
@@ -225,6 +273,7 @@ def set_environment(root: Path, mode: str, benchmark: str) -> None:
         os.environ.setdefault("RAY_DEDUP_LOGS", "0")
         return
     if benchmark == "realworld" or mode in {
+        "deploy",
         "train-realworld",
         "train-realworld-async",
         "eval-realworld-teleop",
@@ -291,11 +340,11 @@ def run_mani_ood(root: Path, command: list[str], hydra_args: list[str]) -> None:
 
 
 def main() -> None:
-    """Start a protected RLinf script in its normal Python launch context."""
+    """Start a bundled script in its normal Python launch context."""
     root = Path(__file__).resolve().parent
     parser = argparse.ArgumentParser(
         prog=Path(sys.argv[0]).name,
-        description="Run a protected RLinf training or evaluation entry point.",
+        description="Run training, evaluation or real-world policy deployment.",
         usage="%(prog)s MODE [Hydra arguments]",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         allow_abbrev=False,
@@ -303,14 +352,14 @@ def main() -> None:
     parser.add_argument("mode", metavar="MODE")
     parser.epilog = (
         "Modes\n"
-        "  Embodied       train, train-async, train-offline, eval, eval-mani-ood\n"
+        "  Embodied       train, train-async, train-offline, eval, deploy, eval-mani-ood\n"
         "                 train-realworld, train-realworld-async, eval-realworld-teleop\n"
         "  Supervised     train-vla-sft, train-vlm-sft, train-reward\n"
         "  Reasoning      train-reasoning-math, train-reasoning-vqa\n"
         "  Agents         train-searchr1, eval-searchr1, train-wideseek, eval-wideseek,\n"
         "                 train-rstar2, train-coding, train-coding-judge,\n"
         "                 train-calc-x, eval-calc-x\n"
-        "  Specialized    train-diffusion, train-cfg-rl, train-recap, train-steam\n\n"
+        "  Specialized    train-diffusion, eval-diffusion, train-cfg-rl, train-recap, train-steam\n\n"
         "Use eval --benchmark NAME to select a bundled evaluation directory.\n"
         "The eval-mani-ood batch requires EVAL_NAME, CKPT_PATH, TOTAL_NUM_ENVS,\n"
         "and EVAL_ROLLOUT_EPOCH.\n"
@@ -372,6 +421,18 @@ def main() -> None:
         config_path = str(Path(config_path).expanduser().resolve())
 
     set_environment(root, mode, benchmark)
+    if ENTRIES[mode] == "evaluations/eval_embodied_agent.py" and "://" not in config_path:
+        # Some evaluation primaries reference shared groups without declaring a search path.
+        # Respect an explicit path both in the primary YAML and in the caller's overrides.
+        from omegaconf import OmegaConf
+        primary = Path(config_path) / (config_name + ".yaml")
+        if primary.is_file() and not any(arg.lstrip("+~").split("=", 1)[0] == "hydra.searchpath"
+                                         for arg in hydra_args):
+            cfg = OmegaConf.load(primary)
+            if OmegaConf.select(cfg, "hydra.searchpath") is None:
+                common = root / "examples" / "embodiment" / "config"
+                uri = json.dumps("file://" + str(common), ensure_ascii=False)
+                hydra_args.append(f"hydra.searchpath=[{uri}]")
     command = [
         *entry_command(root, mode),
         "--config-path",

@@ -15,20 +15,23 @@ fi
 
 stage=$(mktemp -d "$root/.runtime-build.XXXXXXXX")
 trap 'rm -rf -- "$stage"' EXIT
-export UV_CACHE_DIR="${RLINF_UV_CACHE_DIR:-$stage/cache}"
+mkdir -p "$stage/tmp"
+export TMPDIR="$stage/tmp"
+export UV_CACHE_DIR="${TRAIN_UV_CACHE_DIR:-${RLINF_UV_CACHE_DIR:-$stage/cache}}"
 export PYTHONNOUSERSITE=1
 unset PYTHONHOME PYTHONPATH
 
 fetch() {
   local path=$1 sha256=$2 url=$3
   if [[ ! -f "$path" ]]; then
-    curl -fsSL --connect-timeout 15 --retry 3 --retry-all-errors "$url" -o "$path"
+    curl -q -fsSL --connect-timeout 15 --retry 3 --retry-all-errors "$url" -o "$path"
   fi
   printf '%s  %s\n' "$sha256" "$path" | sha256sum --check --status
 }
 
-if [[ -n ${RLINF_CPYTHON_PREFIX:-} ]]; then
-  python_seed=$(cd -- "$RLINF_CPYTHON_PREFIX" && pwd -P)
+python_prefix=${TRAIN_CPYTHON_PREFIX:-${RLINF_CPYTHON_PREFIX:-}}
+if [[ -n $python_prefix ]]; then
+  python_seed=$(cd -- "$python_prefix" && pwd -P)
 else
   cpython=${RLINF_CPYTHON_ARCHIVE:-"$stage/python.tar.gz"}
   fetch "$cpython" 1fb6a89daa750f7eff00eb65d901c3c236713812eb9c8c7e07ecdfcd78203c8e \
@@ -45,20 +48,25 @@ if ! "$python" -IB -m pip --version >/dev/null 2>&1; then
   rm -f -- "$stage/runtime/lib/python3.11/EXTERNALLY-MANAGED"
   "$python" -IB -m ensurepip --default-pip
 fi
-install_args=(
-  pip install --system --break-system-packages --python "$python"
-  --link-mode copy --no-deps
-)
+if command -v "$uv" >/dev/null; then
+  install_args=("$uv" --no-config pip install --system --break-system-packages --python "$python"
+                --link-mode copy --no-deps)
+  index_option=--default-index
+else
+  install_args=(env PIP_CONFIG_FILE=/dev/null "$python" -IB -m pip --isolated install
+                --disable-pip-version-check --no-cache-dir --break-system-packages --no-deps)
+  index_option=--index-url
+fi
 if [[ -n "$wheelhouse" ]]; then
-  "$uv" "${install_args[@]}" --only-binary :all: --no-index --find-links "$wheelhouse" \
+  "${install_args[@]}" --only-binary :all: --no-index --find-links "$wheelhouse" \
     -r "$portable_dir/runtime-requirements.txt"
 else
   sed -E '/^(torch|torchvision)==/d' "$portable_dir/runtime-requirements.txt" \
     > "$stage/pypi.txt"
   sed -nE '/^(torch|torchvision)==/p' "$portable_dir/runtime-requirements.txt" \
     > "$stage/pytorch.txt"
-  "$uv" "${install_args[@]}" --default-index https://pypi.org/simple -r "$stage/pypi.txt"
-  "$uv" "${install_args[@]}" --default-index https://download.pytorch.org/whl/cu128 \
+  "${install_args[@]}" "$index_option" https://pypi.org/simple -r "$stage/pypi.txt"
+  "${install_args[@]}" "$index_option" https://download.pytorch.org/whl/cu128 \
     -r "$stage/pytorch.txt"
 fi
 

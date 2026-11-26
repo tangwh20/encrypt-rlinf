@@ -8,7 +8,7 @@ Usage: bash install.sh embodied --model MODEL --env ENV [options]
 Example: bash install.sh embodied --model openvla --env frankasim
 Runs the bundled upstream installer in a local CPython 3.11 environment. This downloads the selected libraries and assets.
 Requires Linux x86-64, Bash, flock, and standard GNU utilities. An online upstream install also needs its model and simulator system dependencies.
-Use --use-mirror, --no-flash-attn or --no-apex to pass the corresponding option to RLinf.
+Use --use-mirror, --no-flash-attn or --no-apex to pass the corresponding option to the bundled installer.
 Use --task frankasim_ppo_mlp to install the pinned FrankaSim PPO runtime without the OpenVLA policy-training stack.
 Use --prepared-runtime DIR alone to import a standalone CPython 3.11 prefix for any task.
 With embodied, --prepared-runtime DIR also checks the selected simulator.
@@ -46,7 +46,7 @@ if [[ -n $task && ( $model/$env_name/$task != openvla/frankasim/frankasim_ppo_ml
   printf 'The pinned task recipe is embodied --model openvla --env frankasim --task frankasim_ppo_mlp.\n' >&2; exit 2
 fi
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
-setup_dir=$("$root/rlinf-train" --runtime-dir)/setup
+setup_dir=$("$root/run" --runtime-dir)/setup
 # Check embodied names against the inventory from the same checkout as the executable.
 if [[ $embodied == true ]]; then
   for key in "SUPPORTED_MODELS:$model" "SUPPORTED_ENVS:$env_name"; do
@@ -118,7 +118,7 @@ if [[ ! -f $profile/ready || ! -x $venv/bin/python ]]; then
       cp -a -- "$setup_dir/recipes/$task/." "$profile/portable/"
       # build_runtime.sh publishes this prefix only after its own checks succeed.
       if [[ ! -d $venv ]]; then
-        UV="$tools/bin/uv" RLINF_UV_CACHE_DIR="$UV_CACHE_DIR" RLINF_CPYTHON_PREFIX="$seed" bash "$profile/portable/build_runtime.sh"
+        UV="$tools/bin/uv" TRAIN_UV_CACHE_DIR="$UV_CACHE_DIR" TRAIN_CPYTHON_PREFIX="$seed" bash "$profile/portable/build_runtime.sh"
       fi
     elif [[ -f $venv/pyvenv.cfg || ! -x $venv/bin/python ]]; then
       if [[ ! -f $venv/bin/activate || ! -x $venv/bin/python ]]; then

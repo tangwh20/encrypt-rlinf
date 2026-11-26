@@ -6,6 +6,7 @@ import shutil
 import tokenize
 
 
+EXTENSION_SUFFIX = ".cpython-311-x86_64-linux-gnu.so"
 SOURCE_TREES = ("rlinf", "examples", "evaluations", "toolkits")
 ATTRIBUTION = re.compile(
     r"^Licensed under the Apache License, Version 2\.0[^\n]*\n"
